@@ -3,7 +3,11 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "transcribe": "npx tsx transcribe.ts"
+    "start": "npx tsx index.ts",
+    "transcribe": "npx tsx transcribe.ts",
+    "extract": "npx tsx extract-frames.ts",
+    "select": "npx tsx select-images.ts",
+    "generate": "npx tsx generate-html.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -11,6 +15,8 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "openai": "^6.17.0"
+    "@google/generative-ai": "^0.24.1",
+    "openai": "^6.17.0",
+    "sharp": "^0.34.5"
   }
 }
