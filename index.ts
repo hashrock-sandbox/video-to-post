@@ -5,6 +5,7 @@
  * 使い方: npx tsx index.ts <video.mp4>
  */
 
+import "dotenv/config";
 import { spawn } from "child_process";
 import { existsSync } from "fs";
 import { basename, dirname, join } from "path";

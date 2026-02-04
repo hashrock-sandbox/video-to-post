@@ -3,6 +3,7 @@
  * 選出画像をGemini画像生成でコンテンツに合った画像に変換
  */
 
+import "dotenv/config";
 import { GoogleGenAI } from "@google/genai";
 import { readFileSync, writeFileSync, readdirSync, mkdirSync } from "fs";
 import { join, basename } from "path";
@@ -28,7 +29,7 @@ async function transformImage(
   ];
 
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash-preview-05-20",
+    model: "gemini-2.5-flash-image",
     contents,
   });
 

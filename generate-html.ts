@@ -5,6 +5,7 @@
  * - 4セクション構成の記事生成
  */
 
+import "dotenv/config";
 import { readFileSync, writeFileSync, readdirSync } from "fs";
 import { join, basename, dirname } from "path";
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -192,7 +193,7 @@ async function main(): Promise<void> {
   // ファイル読み込み
   const transcript = readFileSync(transcriptPath, "utf-8");
   const images = readdirSync(imagesDir)
-    .filter((f) => f.endsWith(".jpg"))
+    .filter((f) => f.endsWith(".jpg") || f.endsWith(".png"))
     .sort()
     .map((f) => join(imagesDir, f));
 
