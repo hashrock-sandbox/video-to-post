@@ -43,7 +43,11 @@ video.mp4
 - [x] 時間的に4グループに分割
 - [x] シャープネス・明るさでスコアリング
 - [x] 各グループから最高スコアの画像を選出
-- [ ] （オプション）Geminiで最終確認
+
+### Phase 3.5: 画像変換 (nanobanana) ✅
+- [x] Gemini画像生成 (gemini-2.5-flash-preview-05-20)
+- [x] スタイル別プロンプト (blog/lp/tutorial)
+- [x] 元画像をベースに変換
 
 ### Phase 4: コンテンツ分類 ✅
 - [x] Geminiでtranscriptを分析

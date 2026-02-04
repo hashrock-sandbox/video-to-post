@@ -67,6 +67,7 @@ video-to-post: 動画からブログポストを自動生成
   const transcriptPath = join(dir, `${baseName}.txt`);
   const framesDir = join(dir, `${baseName}_frames`);
   const selectedDir = join(dir, `${baseName}_selected`);
+  const transformedDir = join(dir, `${baseName}_transformed`);
   const htmlPath = join(dir, `${baseName}.html`);
 
   console.log(`
@@ -88,8 +89,11 @@ video-to-post: 動画からブログポストを自動生成
   // Step 3: 画像選定
   await runScript("select-images.ts", [framesDir, "4"]);
 
-  // Step 4: HTML生成
-  await runScript("generate-html.ts", [transcriptPath, selectedDir]);
+  // Step 4: 画像変換 (nanobanana)
+  await runScript("transform-images.ts", [selectedDir]);
+
+  // Step 5: HTML生成
+  await runScript("generate-html.ts", [transcriptPath, transformedDir]);
 
   console.log(`
 ╔════════════════════════════════════════════════╗
@@ -99,6 +103,7 @@ video-to-post: 動画からブログポストを自動生成
 生成ファイル:
   - 文字起こし: ${transcriptPath}
   - 選出画像:   ${selectedDir}/
+  - 変換画像:   ${transformedDir}/
   - HTML:       ${htmlPath}
 
 ブラウザで開く:
