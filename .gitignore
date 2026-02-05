@@ -144,8 +144,10 @@ vite.config.ts.timestamp-*
 *.wav
 *.mp4
 *.txt
+*.vtt
 
 *_frames
 *_selected
 *_transformed
+*_output
 *.html
