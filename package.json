@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "npx tsx index.ts",
+    "server": "npx tsx server.ts",
     "transcribe": "npx tsx transcribe.ts",
     "extract": "npx tsx extract-frames.ts",
     "select": "npx tsx select-images.ts",
@@ -18,7 +19,11 @@
   "dependencies": {
     "@google/genai": "^1.39.0",
     "@google/generative-ai": "^0.24.1",
+    "@hono/node-server": "^1.19.9",
+    "@types/archiver": "^7.0.0",
+    "archiver": "^7.0.1",
     "dotenv": "^17.2.3",
+    "hono": "^4.11.7",
     "openai": "^6.17.0",
     "sharp": "^0.34.5"
   }
