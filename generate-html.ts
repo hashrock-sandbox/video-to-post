@@ -374,8 +374,9 @@ async function main(): Promise<void> {
   const content = await generateSections(cues, contentType);
   console.log(`タイトル: ${content.title}`);
 
-  // 出力ディレクトリ
-  const outputDir = framesDir.replace(/_frames$/, "_output");
+  // 出力ディレクトリ（framesと同じ親ディレクトリのoutput/に出力）
+  const projectDir = dirname(framesDir);
+  const outputDir = join(projectDir, "output");
   mkdirSync(outputDir, { recursive: true });
 
   // 各セクションの画像を選定・変換
@@ -390,7 +391,8 @@ async function main(): Promise<void> {
     console.log(`  選定: ${basename(selectedFrame)}`);
 
     // 画像変換
-    const outputPath = join(outputDir, `section_${i + 1}.png`);
+    const imageName = `section_${i + 1}.png`;
+    const outputPath = join(outputDir, imageName);
     console.log(`  変換中: ${section.imagePrompt}`);
     try {
       await transformImage(selectedFrame, section.imagePrompt, outputPath);
@@ -399,12 +401,13 @@ async function main(): Promise<void> {
       console.log(`  変換失敗、元画像を使用`);
       copyFileSync(selectedFrame, outputPath);
     }
-    outputImages.push(outputPath);
+    // HTMLからの相対パスを保存
+    outputImages.push(`output/${imageName}`);
   }
 
-  // HTML生成
+  // HTML生成（同じディレクトリにvideo.htmlとして出力）
   const html = buildHTML(content, outputImages);
-  const htmlPath = vttPath.replace(/\.vtt$/, ".html");
+  const htmlPath = join(projectDir, "video.html");
   writeFileSync(htmlPath, html);
 
   console.log(`\n完了！`);

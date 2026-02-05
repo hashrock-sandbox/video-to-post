@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 /**
  * video-to-post API Server
- * Honoベースのサーバー
+ * Honoベースのサーバー + Drizzle ORM + SQLite
  */
 
 import "dotenv/config";
@@ -14,62 +14,29 @@ import { spawn } from "child_process";
 import {
   existsSync,
   mkdirSync,
-  readdirSync,
   rmSync,
-  statSync,
-  createReadStream,
-  createWriteStream,
+  readdirSync,
   readFileSync,
+  createWriteStream,
 } from "fs";
-import { join, basename, dirname } from "path";
+import { join, dirname } from "path";
 import archiver from "archiver";
+import { randomUUID } from "crypto";
+import {
+  db,
+  getProjectDir,
+  getAllProjects,
+  getProject,
+  createProject,
+  updateProject,
+  deleteProject,
+  PROJECTS_DIR,
+} from "./db/index.js";
 
 const app = new Hono();
-const UPLOAD_DIR = "./uploads";
 
 // CORSを有効化
 app.use("*", cors());
-
-// アップロードディレクトリ作成
-mkdirSync(UPLOAD_DIR, { recursive: true });
-
-// 動画一覧を取得
-function getVideos(): { id: string; name: string; size: number; createdAt: Date; status: VideoStatus }[] {
-  if (!existsSync(UPLOAD_DIR)) return [];
-
-  return readdirSync(UPLOAD_DIR)
-    .filter((f) => f.endsWith(".mp4"))
-    .map((f) => {
-      const fullPath = join(UPLOAD_DIR, f);
-      const stat = statSync(fullPath);
-      const id = basename(f, ".mp4");
-      return {
-        id,
-        name: f,
-        size: stat.size,
-        createdAt: stat.birthtime,
-        status: getVideoStatus(id),
-      };
-    })
-    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-}
-
-// 動画のステータス
-interface VideoStatus {
-  hasVtt: boolean;
-  hasFrames: boolean;
-  hasOutput: boolean;
-  hasHtml: boolean;
-}
-
-function getVideoStatus(id: string): VideoStatus {
-  return {
-    hasVtt: existsSync(join(UPLOAD_DIR, `${id}.vtt`)),
-    hasFrames: existsSync(join(UPLOAD_DIR, `${id}_frames`)),
-    hasOutput: existsSync(join(UPLOAD_DIR, `${id}_output`)),
-    hasHtml: existsSync(join(UPLOAD_DIR, `${id}.html`)),
-  };
-}
 
 // スクリプト実行（ストリーミング出力付き）
 function runScript(
@@ -95,13 +62,23 @@ function runScript(
 
 // ===== API Routes =====
 
-// 動画一覧
-app.get("/api/videos", (c) => {
-  return c.json(getVideos());
+// プロジェクト一覧
+app.get("/api/projects", async (c) => {
+  const projects = await getAllProjects();
+  return c.json(projects);
 });
 
-// 動画アップロード（チャンクアップロード対応）
-app.post("/api/videos/upload", async (c) => {
+// プロジェクト詳細
+app.get("/api/projects/:id", async (c) => {
+  const project = await getProject(c.req.param("id"));
+  if (!project) {
+    return c.json({ error: "プロジェクトが見つかりません" }, 404);
+  }
+  return c.json(project);
+});
+
+// 動画アップロード（新規プロジェクト作成）
+app.post("/api/projects/upload", async (c) => {
   const formData = await c.req.formData();
   const file = formData.get("file") as File | null;
 
@@ -109,13 +86,20 @@ app.post("/api/videos/upload", async (c) => {
     return c.json({ error: "ファイルが指定されていません" }, 400);
   }
 
-  const fileName = file.name;
-  const filePath = join(UPLOAD_DIR, fileName);
+  // プロジェクトID生成
+  const projectId = randomUUID();
+  const projectDir = getProjectDir(projectId);
 
-  // ファイルを保存
+  // プロジェクトディレクトリ作成
+  mkdirSync(projectDir, { recursive: true });
+  mkdirSync(join(projectDir, "frames"), { recursive: true });
+  mkdirSync(join(projectDir, "output"), { recursive: true });
+
+  // 動画ファイル保存
+  const videoPath = join(projectDir, "video.mp4");
   const arrayBuffer = await file.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
-  const writeStream = createWriteStream(filePath);
+  const writeStream = createWriteStream(videoPath);
   writeStream.write(buffer);
   writeStream.end();
 
@@ -124,101 +108,147 @@ app.post("/api/videos/upload", async (c) => {
     writeStream.on("error", reject);
   });
 
-  const id = basename(fileName, ".mp4");
-  return c.json({
-    success: true,
-    id,
-    name: fileName,
-    size: buffer.length,
+  // DBにプロジェクト作成
+  const now = new Date();
+  const project = await createProject({
+    id: projectId,
+    name: file.name,
+    createdAt: now,
+    updatedAt: now,
+    videoPath: "video.mp4",
+    framesDir: "frames",
+    outputDir: "output",
+    videoSize: buffer.length,
+    status: "pending",
   });
+
+  return c.json(project);
 });
 
-// 動画削除
-app.delete("/api/videos/:id", (c) => {
+// プロジェクト削除
+app.delete("/api/projects/:id", async (c) => {
   const id = c.req.param("id");
-  const basePath = join(UPLOAD_DIR, id);
+  const project = await getProject(id);
 
-  // 関連ファイルを削除
-  const toDelete = [
-    `${basePath}.mp4`,
-    `${basePath}.mp3`,
-    `${basePath}.wav`,
-    `${basePath}.vtt`,
-    `${basePath}.html`,
-    `${basePath}_frames`,
-    `${basePath}_output`,
-  ];
-
-  for (const path of toDelete) {
-    if (existsSync(path)) {
-      rmSync(path, { recursive: true, force: true });
-    }
+  if (!project) {
+    return c.json({ error: "プロジェクトが見つかりません" }, 404);
   }
+
+  // ディレクトリ削除
+  const projectDir = getProjectDir(id);
+  if (existsSync(projectDir)) {
+    rmSync(projectDir, { recursive: true, force: true });
+  }
+
+  // DB削除
+  await deleteProject(id);
 
   return c.json({ success: true });
 });
 
 // ステップ実行（SSE）
-app.get("/api/videos/:id/run/:step", async (c) => {
+app.get("/api/projects/:id/run/:step", async (c) => {
   const id = c.req.param("id");
   const step = c.req.param("step");
-  const videoPath = join(UPLOAD_DIR, `${id}.mp4`);
+
+  const project = await getProject(id);
+  if (!project) {
+    return c.json({ error: "プロジェクトが見つかりません" }, 404);
+  }
+
+  const projectDir = getProjectDir(id);
+  const videoPath = join(projectDir, "video.mp4");
 
   if (!existsSync(videoPath)) {
-    return c.json({ error: "動画が見つかりません" }, 404);
+    return c.json({ error: "動画ファイルが見つかりません" }, 404);
   }
 
   return streamSSE(c, async (stream) => {
     const sendMessage = async (type: string, data: string) => {
-      await stream.writeSSE({ data: JSON.stringify({ type, data }), event: "message" });
+      await stream.writeSSE({
+        data: JSON.stringify({ type, data }),
+        event: "message",
+      });
     };
 
     try {
-      const vttPath = join(UPLOAD_DIR, `${id}.vtt`);
-      const framesDir = join(UPLOAD_DIR, `${id}_frames`);
+      const vttPath = join(projectDir, "video.vtt");
+      const framesDir = join(projectDir, "frames");
 
       switch (step) {
         case "transcribe":
+          await updateProject(id, { status: "transcribing" });
           await sendMessage("status", "文字起こし開始...");
           await runScript("transcribe.ts", [videoPath], (data) => {
             sendMessage("output", data);
+          });
+          await updateProject(id, {
+            transcribeCompleted: true,
+            vttPath: "video.vtt",
+            wavPath: "video.wav",
+            status: "pending",
           });
           await sendMessage("status", "文字起こし完了");
           break;
 
         case "extract":
+          await updateProject(id, { status: "extracting" });
           await sendMessage("status", "フレーム抽出開始...");
           await runScript("extract-frames.ts", [videoPath, "100"], (data) => {
             sendMessage("output", data);
+          });
+          await updateProject(id, {
+            extractCompleted: true,
+            status: "pending",
           });
           await sendMessage("status", "フレーム抽出完了");
           break;
 
         case "generate":
+          await updateProject(id, { status: "generating" });
           await sendMessage("status", "HTML生成開始...");
           await runScript("generate-html.ts", [vttPath, framesDir], (data) => {
             sendMessage("output", data);
+          });
+          await updateProject(id, {
+            generateCompleted: true,
+            htmlPath: "video.html",
+            status: "completed",
           });
           await sendMessage("status", "HTML生成完了");
           break;
 
         case "all":
           // 全ステップ実行
+          await updateProject(id, { status: "transcribing" });
           await sendMessage("status", "処理開始: 文字起こし...");
           await runScript("transcribe.ts", [videoPath], (data) => {
             sendMessage("output", data);
           });
+          await updateProject(id, {
+            transcribeCompleted: true,
+            vttPath: "video.vtt",
+            wavPath: "video.wav",
+          });
           await sendMessage("progress", "33");
 
+          await updateProject(id, { status: "extracting" });
           await sendMessage("status", "処理中: フレーム抽出...");
           await runScript("extract-frames.ts", [videoPath, "100"], (data) => {
             sendMessage("output", data);
           });
+          await updateProject(id, { extractCompleted: true });
           await sendMessage("progress", "66");
 
+          await updateProject(id, { status: "generating" });
           await sendMessage("status", "処理中: HTML生成...");
           await runScript("generate-html.ts", [vttPath, framesDir], (data) => {
             sendMessage("output", data);
+          });
+          await updateProject(id, {
+            generateCompleted: true,
+            htmlPath: "video.html",
+            status: "completed",
           });
           await sendMessage("progress", "100");
           await sendMessage("status", "全処理完了！");
@@ -230,18 +260,25 @@ app.get("/api/videos/:id/run/:step", async (c) => {
 
       await sendMessage("done", "完了");
     } catch (err) {
+      await updateProject(id, {
+        status: "error",
+        errorMessage: (err as Error).message,
+      });
       await sendMessage("error", (err as Error).message);
     }
   });
 });
 
 // 生成されたHTMLを取得
-app.get("/api/videos/:id/html", (c) => {
-  const id = c.req.param("id");
-  const htmlPath = join(UPLOAD_DIR, `${id}.html`);
-
-  if (!existsSync(htmlPath)) {
+app.get("/api/projects/:id/html", async (c) => {
+  const project = await getProject(c.req.param("id"));
+  if (!project || !project.htmlPath) {
     return c.json({ error: "HTMLが見つかりません" }, 404);
+  }
+
+  const htmlPath = join(getProjectDir(project.id), project.htmlPath);
+  if (!existsSync(htmlPath)) {
+    return c.json({ error: "HTMLファイルが見つかりません" }, 404);
   }
 
   const html = readFileSync(htmlPath, "utf-8");
@@ -249,14 +286,16 @@ app.get("/api/videos/:id/html", (c) => {
 });
 
 // ZIPダウンロード
-app.get("/api/videos/:id/download", async (c) => {
-  const id = c.req.param("id");
-  const basePath = join(UPLOAD_DIR, id);
+app.get("/api/projects/:id/download", async (c) => {
+  const project = await getProject(c.req.param("id"));
+  if (!project) {
+    return c.json({ error: "プロジェクトが見つかりません" }, 404);
+  }
 
-  const htmlPath = `${basePath}.html`;
-  const outputDir = `${basePath}_output`;
+  const projectDir = getProjectDir(project.id);
+  const htmlPath = project.htmlPath ? join(projectDir, project.htmlPath) : null;
 
-  if (!existsSync(htmlPath)) {
+  if (!htmlPath || !existsSync(htmlPath)) {
     return c.json({ error: "生成データが見つかりません" }, 404);
   }
 
@@ -267,17 +306,20 @@ app.get("/api/videos/:id/download", async (c) => {
   archive.on("data", (chunk) => chunks.push(chunk));
 
   // HTMLファイルを追加
-  archive.file(htmlPath, { name: `${id}.html` });
+  archive.file(htmlPath, { name: "index.html" });
 
   // 出力画像を追加
+  const outputDir = join(projectDir, "output");
   if (existsSync(outputDir)) {
-    archive.directory(outputDir, `${id}_output`);
+    archive.directory(outputDir, "output");
   }
 
   // VTTファイルを追加
-  const vttPath = `${basePath}.vtt`;
-  if (existsSync(vttPath)) {
-    archive.file(vttPath, { name: `${id}.vtt` });
+  if (project.vttPath) {
+    const vttPath = join(projectDir, project.vttPath);
+    if (existsSync(vttPath)) {
+      archive.file(vttPath, { name: "video.vtt" });
+    }
   }
 
   await archive.finalize();
@@ -285,16 +327,18 @@ app.get("/api/videos/:id/download", async (c) => {
   // すべてのチャンクを結合
   const buffer = Buffer.concat(chunks);
 
+  const safeName = project.name.replace(/[^a-zA-Z0-9_.-]/g, "_").replace(/\.mp4$/i, "");
+
   return new Response(buffer, {
     headers: {
       "Content-Type": "application/zip",
-      "Content-Disposition": `attachment; filename="${id}.zip"`,
+      "Content-Disposition": `attachment; filename="${safeName}.zip"`,
     },
   });
 });
 
-// 出力画像の静的配信
-app.get("/uploads/*", serveStatic({ root: "./" }));
+// 静的ファイル配信（プロジェクトの出力画像など）
+app.get("/data/*", serveStatic({ root: "./" }));
 
 // フロントエンド（シンプルなHTML）
 app.get("/", (c) => {
@@ -339,23 +383,38 @@ app.get("/", (c) => {
       transition: width 0.3s;
     }
 
-    .video-list { display: flex; flex-direction: column; gap: 1rem; }
-    .video-card {
+    .project-list { display: flex; flex-direction: column; gap: 1rem; }
+    .project-card {
       background: white;
       border-radius: 8px;
       padding: 1.5rem;
       box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     }
-    .video-card h3 { color: #1f2937; margin-bottom: 0.5rem; }
-    .video-card .meta { color: #6b7280; font-size: 0.875rem; margin-bottom: 1rem; }
-    .video-card .status { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
-    .video-card .status span {
+    .project-card h3 { color: #1f2937; margin-bottom: 0.5rem; word-break: break-all; }
+    .project-card .meta { color: #6b7280; font-size: 0.875rem; margin-bottom: 1rem; }
+    .project-card .status-badge {
+      display: inline-block;
+      padding: 0.25rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 500;
+      margin-bottom: 1rem;
+    }
+    .status-pending { background: #e5e7eb; color: #374151; }
+    .status-transcribing, .status-extracting, .status-generating {
+      background: #fef3c7; color: #92400e;
+    }
+    .status-completed { background: #d1fae5; color: #065f46; }
+    .status-error { background: #fee2e2; color: #991b1b; }
+
+    .steps { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    .steps span {
       padding: 0.25rem 0.5rem;
       border-radius: 4px;
       font-size: 0.75rem;
     }
-    .status-done { background: #d1fae5; color: #065f46; }
-    .status-pending { background: #e5e7eb; color: #6b7280; }
+    .step-done { background: #d1fae5; color: #065f46; }
+    .step-pending { background: #e5e7eb; color: #6b7280; }
 
     .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
     button {
@@ -419,7 +478,7 @@ app.get("/", (c) => {
 </head>
 <body>
   <div class="container">
-    <h1>📹 video-to-post</h1>
+    <h1>video-to-post</h1>
 
     <div class="upload-zone" id="upload-zone">
       <input type="file" id="file-input" accept="video/mp4" hidden>
@@ -430,7 +489,7 @@ app.get("/", (c) => {
       </div>
     </div>
 
-    <div class="video-list" id="video-list"></div>
+    <div class="project-list" id="project-list"></div>
   </div>
 
   <div class="modal" id="preview-modal">
@@ -477,9 +536,8 @@ app.get("/", (c) => {
       const formData = new FormData();
       formData.append('file', file);
 
-      // XHRでアップロード（進捗表示のため）
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', API + '/videos/upload');
+      xhr.open('POST', API + '/projects/upload');
 
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
@@ -490,8 +548,9 @@ app.get("/", (c) => {
 
       xhr.onload = () => {
         progressBar.style.display = 'none';
+        fileInput.value = '';
         if (xhr.status === 200) {
-          loadVideos();
+          loadProjects();
         } else {
           alert('アップロード失敗');
         }
@@ -500,35 +559,50 @@ app.get("/", (c) => {
       xhr.send(formData);
     }
 
-    // 動画一覧読み込み
-    async function loadVideos() {
-      const res = await fetch(API + '/videos');
-      const videos = await res.json();
+    // プロジェクト一覧読み込み
+    async function loadProjects() {
+      const res = await fetch(API + '/projects');
+      const projects = await res.json();
 
-      const list = document.getElementById('video-list');
-      list.innerHTML = videos.map(v => \`
-        <div class="video-card" id="card-\${v.id}">
-          <h3>\${v.name}</h3>
-          <div class="meta">\${formatSize(v.size)} · \${formatDate(v.createdAt)}</div>
-          <div class="status">
-            <span class="\${v.status.hasVtt ? 'status-done' : 'status-pending'}">文字起こし</span>
-            <span class="\${v.status.hasFrames ? 'status-done' : 'status-pending'}">フレーム抽出</span>
-            <span class="\${v.status.hasHtml ? 'status-done' : 'status-pending'}">HTML生成</span>
+      const list = document.getElementById('project-list');
+      list.innerHTML = projects.reverse().map(p => {
+        const statusLabels = {
+          pending: '待機中',
+          transcribing: '文字起こし中...',
+          extracting: 'フレーム抽出中...',
+          generating: 'HTML生成中...',
+          completed: '完了',
+          error: 'エラー'
+        };
+
+        return \`
+        <div class="project-card" id="card-\${p.id}">
+          <h3>\${p.name}</h3>
+          <div class="meta">\${formatSize(p.videoSize)} · \${formatDate(p.createdAt)}</div>
+          <span class="status-badge status-\${p.status}">\${statusLabels[p.status] || p.status}</span>
+          <div class="steps">
+            <span class="\${p.transcribeCompleted ? 'step-done' : 'step-pending'}">文字起こし</span>
+            <span class="\${p.extractCompleted ? 'step-done' : 'step-pending'}">フレーム抽出</span>
+            <span class="\${p.generateCompleted ? 'step-done' : 'step-pending'}">HTML生成</span>
           </div>
           <div class="actions">
-            <button class="btn-primary" onclick="runStep('\${v.id}', 'all')">全処理実行</button>
-            <button class="btn-secondary" onclick="runStep('\${v.id}', 'transcribe')">文字起こし</button>
-            <button class="btn-secondary" onclick="runStep('\${v.id}', 'extract')">フレーム抽出</button>
-            <button class="btn-secondary" onclick="runStep('\${v.id}', 'generate')">HTML生成</button>
-            \${v.status.hasHtml ? \`
-              <button class="btn-secondary" onclick="previewHtml('\${v.id}')">プレビュー</button>
-              <button class="btn-secondary" onclick="downloadZip('\${v.id}')">ZIPダウンロード</button>
+            <button class="btn-primary" onclick="runStep('\${p.id}', 'all')" \${isProcessing(p.status) ? 'disabled' : ''}>全処理実行</button>
+            <button class="btn-secondary" onclick="runStep('\${p.id}', 'transcribe')" \${isProcessing(p.status) ? 'disabled' : ''}>文字起こし</button>
+            <button class="btn-secondary" onclick="runStep('\${p.id}', 'extract')" \${isProcessing(p.status) ? 'disabled' : ''}>フレーム抽出</button>
+            <button class="btn-secondary" onclick="runStep('\${p.id}', 'generate')" \${isProcessing(p.status) ? 'disabled' : ''}>HTML生成</button>
+            \${p.generateCompleted ? \`
+              <button class="btn-secondary" onclick="previewHtml('\${p.id}')">プレビュー</button>
+              <button class="btn-secondary" onclick="downloadZip('\${p.id}')">ZIPダウンロード</button>
             \` : ''}
-            <button class="btn-danger" onclick="deleteVideo('\${v.id}')">削除</button>
+            <button class="btn-danger" onclick="deleteProject('\${p.id}')">削除</button>
           </div>
-          <div class="output-log" id="log-\${v.id}"></div>
+          <div class="output-log" id="log-\${p.id}"></div>
         </div>
-      \`).join('');
+      \`}).join('');
+    }
+
+    function isProcessing(status) {
+      return ['transcribing', 'extracting', 'generating'].includes(status);
     }
 
     // ステップ実行
@@ -537,7 +611,7 @@ app.get("/", (c) => {
       logEl.style.display = 'block';
       logEl.textContent = '処理開始...\\n';
 
-      const eventSource = new EventSource(API + '/videos/' + id + '/run/' + step);
+      const eventSource = new EventSource(API + '/projects/' + id + '/run/' + step);
 
       eventSource.onmessage = (e) => {
         const msg = JSON.parse(e.data);
@@ -547,27 +621,27 @@ app.get("/", (c) => {
         }
         if (msg.type === 'done' || msg.type === 'error') {
           eventSource.close();
-          loadVideos();
+          loadProjects();
         }
       };
 
       eventSource.onerror = () => {
         eventSource.close();
-        loadVideos();
+        loadProjects();
       };
     }
 
     // 削除
-    async function deleteVideo(id) {
-      if (!confirm('削除しますか？')) return;
-      await fetch(API + '/videos/' + id, { method: 'DELETE' });
-      loadVideos();
+    async function deleteProject(id) {
+      if (!confirm('削除しますか？関連するすべてのファイルが削除されます。')) return;
+      await fetch(API + '/projects/' + id, { method: 'DELETE' });
+      loadProjects();
     }
 
     // プレビュー
     function previewHtml(id) {
-      document.getElementById('modal-title').textContent = id + '.html';
-      document.getElementById('preview-frame').src = API + '/videos/' + id + '/html';
+      document.getElementById('modal-title').textContent = 'プレビュー';
+      document.getElementById('preview-frame').src = API + '/projects/' + id + '/html';
       document.getElementById('preview-modal').classList.add('active');
     }
 
@@ -578,23 +652,27 @@ app.get("/", (c) => {
 
     // ZIPダウンロード
     function downloadZip(id) {
-      window.location.href = API + '/videos/' + id + '/download';
+      window.location.href = API + '/projects/' + id + '/download';
     }
 
     // ユーティリティ
     function formatSize(bytes) {
+      if (!bytes) return '-';
       if (bytes < 1024) return bytes + ' B';
       if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
       if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
       return (bytes / 1024 / 1024 / 1024).toFixed(1) + ' GB';
     }
 
-    function formatDate(date) {
-      return new Date(date).toLocaleString('ja-JP');
+    function formatDate(timestamp) {
+      if (!timestamp) return '-';
+      // タイムスタンプが秒単位の場合は1000倍する
+      const date = new Date(typeof timestamp === 'number' && timestamp < 10000000000 ? timestamp * 1000 : timestamp);
+      return date.toLocaleString('ja-JP');
     }
 
     // 初期読み込み
-    loadVideos();
+    loadProjects();
   </script>
 </body>
 </html>`;
@@ -603,5 +681,5 @@ app.get("/", (c) => {
 
 // サーバー起動
 const port = parseInt(process.env.PORT || "3000", 10);
-console.log(`🚀 Server running at http://localhost:${port}`);
+console.log(`Server running at http://localhost:${port}`);
 serve({ fetch: app.fetch, port });

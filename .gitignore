@@ -151,3 +151,7 @@ vite.config.ts.timestamp-*
 *_transformed
 *_output
 *.html
+
+# Server data
+data/
+uploads/

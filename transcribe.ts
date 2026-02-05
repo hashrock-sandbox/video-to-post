@@ -69,10 +69,10 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const baseName = basename(videoPath, ".mp4");
   const dir = dirname(videoPath) || ".";
-  const wavPath = join(dir, `${baseName}.wav`);
-  const outputBase = join(dir, baseName);
+  // video.mp4 -> video.wav, video.vtt (同じディレクトリに出力)
+  const wavPath = join(dir, "video.wav");
+  const outputBase = join(dir, "video");
 
   await extractAudio(videoPath, wavPath);
   await transcribe(wavPath, outputBase);

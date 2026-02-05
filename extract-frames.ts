@@ -107,9 +107,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const baseName = basename(videoPath, ".mp4");
   const dir = dirname(videoPath) || ".";
-  const outputDir = join(dir, `${baseName}_frames`);
+  // 同じディレクトリのframes/に出力
+  const outputDir = join(dir, "frames");
 
   const files = await extractFrames(videoPath, outputDir, targetFrames);
 
