@@ -1,12 +1,13 @@
 #!/usr/bin/env npx tsx
 /**
  * MP4動画からMP3を抽出し、whisper.cppで文字起こしを行うスクリプト
+ * タイムスタンプ付きVTT形式で出力
  *
  * 必要: brew install whisper-cpp ffmpeg
  */
 
 import { spawn } from "child_process";
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync } from "fs";
 import { basename, dirname, join } from "path";
 
 function runCommand(cmd: string, args: string[]): Promise<void> {
@@ -36,15 +37,16 @@ async function extractAudio(videoPath: string, wavPath: string): Promise<void> {
   console.log("音声抽出完了");
 }
 
-async function transcribe(wavPath: string, outputPath: string): Promise<void> {
+async function transcribe(wavPath: string, outputBase: string): Promise<void> {
   console.log(`文字起こし中: ${wavPath}`);
 
   // whisper-cli（Homebrew版whisper-cpp）
+  // -ovtt: VTT形式（タイムスタンプ付き）
   await runCommand("whisper-cli", [
     "-m", "/opt/homebrew/share/whisper-cpp/models/ggml-large-v3-turbo.bin",
     "-l", "ja",
-    "-otxt",
-    "-of", outputPath.replace(/\.txt$/, ""),
+    "-ovtt",
+    "-of", outputBase,
     wavPath,
   ]);
 
@@ -70,13 +72,13 @@ async function main(): Promise<void> {
   const baseName = basename(videoPath, ".mp4");
   const dir = dirname(videoPath) || ".";
   const wavPath = join(dir, `${baseName}.wav`);
-  const transcriptPath = join(dir, `${baseName}.txt`);
+  const outputBase = join(dir, baseName);
 
   await extractAudio(videoPath, wavPath);
-  await transcribe(wavPath, transcriptPath);
+  await transcribe(wavPath, outputBase);
 
   console.log(`\n完了！`);
-  console.log(`文字起こし: ${transcriptPath}`);
+  console.log(`文字起こし: ${outputBase}.vtt`);
 }
 
 main().catch((err) => {

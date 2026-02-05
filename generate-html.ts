@@ -1,32 +1,86 @@
 #!/usr/bin/env npx tsx
 /**
- * 文字起こしと画像からHTMLブログポストを生成
- * - Geminiでコンテンツタイプ判定
- * - 4セクション構成の記事生成
+ * VTT文字起こしと画像からHTMLブログポストを生成
+ * 1. VTT解析 → セクション分割（時刻付き）
+ * 2. 各セクションの時刻に近い画像を選定
+ * 3. Gemini画像生成で主題を強調した画像に変換
+ * 4. HTML出力
  */
 
 import "dotenv/config";
-import { readFileSync, writeFileSync, readdirSync } from "fs";
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, copyFileSync } from "fs";
 import { join, basename, dirname } from "path";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
+import sharp from "sharp";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+const imageAI = new GoogleGenAI({});
 
 type ContentType = "blog" | "lp" | "tutorial";
+
+interface VttCue {
+  startTime: number; // 秒
+  endTime: number;
+  text: string;
+}
+
+interface Section {
+  heading: string;
+  body: string;
+  startTime: number;
+  imagePrompt: string;
+}
 
 interface GeneratedContent {
   type: ContentType;
   title: string;
-  sections: {
-    heading: string;
-    body: string;
-    imageIndex: number;
-  }[];
+  sections: Section[];
+}
+
+function parseVtt(vttContent: string): VttCue[] {
+  const lines = vttContent.split("\n");
+  const cues: VttCue[] = [];
+  let i = 0;
+
+  // Skip header
+  while (i < lines.length && !lines[i].includes("-->")) i++;
+
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    if (line.includes("-->")) {
+      const [start, end] = line.split("-->").map((t) => {
+        const parts = t.trim().split(":");
+        if (parts.length === 3) {
+          const [h, m, s] = parts;
+          return parseInt(h) * 3600 + parseInt(m) * 60 + parseFloat(s.replace(",", "."));
+        }
+        const [m, s] = parts;
+        return parseInt(m) * 60 + parseFloat(s.replace(",", "."));
+      });
+
+      i++;
+      let text = "";
+      while (i < lines.length && lines[i].trim() && !lines[i].includes("-->")) {
+        text += lines[i].trim() + " ";
+        i++;
+      }
+      if (text.trim()) {
+        cues.push({ startTime: start, endTime: end, text: text.trim() });
+      }
+    } else {
+      i++;
+    }
+  }
+  return cues;
+}
+
+function cuesToText(cues: VttCue[]): string {
+  return cues.map((c) => c.text).join(" ");
 }
 
 async function classifyContent(transcript: string): Promise<ContentType> {
   console.log("コンテンツタイプを判定中...");
-
   const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
   const prompt = `以下の文字起こしテキストを分析し、最も適切なコンテンツタイプを1つだけ回答してください。
@@ -49,40 +103,43 @@ ${transcript.slice(0, 3000)}
   return "blog";
 }
 
-async function generateArticle(
-  transcript: string,
-  images: string[],
+async function generateSections(
+  cues: VttCue[],
   contentType: ContentType
 ): Promise<GeneratedContent> {
-  console.log(`記事生成中（タイプ: ${contentType}）...`);
-
+  console.log(`セクション生成中（タイプ: ${contentType}）...`);
   const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
+  const transcript = cuesToText(cues);
+  const duration = cues[cues.length - 1]?.endTime || 0;
+
   const styleGuide = {
-    blog: "読みやすいブログ記事風。親しみやすい口調で、読者に語りかけるように。",
-    lp: "魅力的なランディングページ風。ベネフィットを強調し、行動を促す。",
-    tutorial: "分かりやすいチュートリアル風。ステップバイステップで丁寧に説明。",
+    blog: "読みやすいブログ記事風。親しみやすい口調で。",
+    lp: "魅力的なランディングページ風。ベネフィットを強調。",
+    tutorial: "分かりやすいチュートリアル風。ステップバイステップで。",
   };
 
-  const prompt = `以下の文字起こしから、${styleGuide[contentType]}のHTMLコンテンツを生成してください。
+  const prompt = `以下の文字起こし（動画長: ${Math.floor(duration)}秒）から、${styleGuide[contentType]}のコンテンツを生成してください。
 
 要件:
 - タイトル1つ
-- 4つのセクション（各セクションに見出しと本文）
-- 各セクションに画像を1枚配置（imageIndex: 0-3）
-- JSON形式で出力
+- 4つのセクション
+- 各セクションに: 見出し、本文、開始時刻（秒）、画像生成プロンプト
+- 画像生成プロンプトは、そのセクションの内容を視覚的に表現する短い英語の説明（例: "Two developers discussing code on a screen"）
 
 文字起こし:
 ${transcript}
 
-出力形式（このJSON形式で出力）:
+JSON形式で出力:
 {
   "title": "記事タイトル",
   "sections": [
-    { "heading": "セクション1見出し", "body": "本文（HTMLタグ可）", "imageIndex": 0 },
-    { "heading": "セクション2見出し", "body": "本文", "imageIndex": 1 },
-    { "heading": "セクション3見出し", "body": "本文", "imageIndex": 2 },
-    { "heading": "セクション4見出し", "body": "本文", "imageIndex": 3 }
+    {
+      "heading": "セクション見出し",
+      "body": "本文（HTMLタグ可）",
+      "startTime": 0,
+      "imagePrompt": "English description for image generation"
+    }
   ]
 }
 
@@ -90,15 +147,113 @@ JSON:`;
 
   const result = await model.generateContent(prompt);
   const responseText = result.response.text();
-
-  // JSONを抽出
   const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new Error("JSON生成に失敗しました");
-  }
+  if (!jsonMatch) throw new Error("JSON生成に失敗しました");
 
   const parsed = JSON.parse(jsonMatch[0]);
   return { type: contentType, ...parsed };
+}
+
+function timecodeToSeconds(timecode: string): number {
+  // frame_01_30_00.jpg -> 5400秒
+  const match = timecode.match(/(\d{2})_(\d{2})_(\d{2})/);
+  if (!match) return 0;
+  return parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseInt(match[3]);
+}
+
+function findNearestFrame(frames: string[], targetTime: number): string {
+  let nearest = frames[0];
+  let minDiff = Infinity;
+
+  for (const frame of frames) {
+    const frameTime = timecodeToSeconds(basename(frame));
+    const diff = Math.abs(frameTime - targetTime);
+    if (diff < minDiff) {
+      minDiff = diff;
+      nearest = frame;
+    }
+  }
+  return nearest;
+}
+
+async function analyzeAndSelectBestFrame(
+  frames: string[],
+  targetTime: number,
+  windowSeconds: number = 120
+): Promise<string> {
+  // 時刻の前後windowSeconds秒の画像を候補として選ぶ
+  const candidates = frames.filter((f) => {
+    const t = timecodeToSeconds(basename(f));
+    return Math.abs(t - targetTime) <= windowSeconds;
+  });
+
+  if (candidates.length === 0) {
+    return findNearestFrame(frames, targetTime);
+  }
+
+  // シャープネスで最良の画像を選ぶ
+  let best = candidates[0];
+  let bestScore = 0;
+
+  for (const frame of candidates) {
+    const { data, info } = await sharp(frame)
+      .greyscale()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    let variance = 0;
+    const width = info.width;
+    for (let i = 1; i < data.length - 1; i++) {
+      if (i % width === 0 || i % width === width - 1) continue;
+      const laplacian = -4 * data[i] + data[i - 1] + data[i + 1] + data[i - width] + data[i + width];
+      variance += laplacian * laplacian;
+    }
+    const score = Math.sqrt(variance / data.length);
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = frame;
+    }
+  }
+
+  return best;
+}
+
+async function transformImage(
+  imagePath: string,
+  prompt: string,
+  outputPath: string
+): Promise<void> {
+  const imageData = readFileSync(imagePath);
+  const base64Image = imageData.toString("base64");
+
+  const contents = [
+    {
+      text: `Transform this image to emphasize: ${prompt}. Make it clean, professional, and visually appealing for a blog post. Keep the main subject but enhance the visual presentation.`,
+    },
+    {
+      inlineData: {
+        mimeType: "image/jpeg",
+        data: base64Image,
+      },
+    },
+  ];
+
+  const response = await imageAI.models.generateContent({
+    model: "gemini-2.5-flash-image",
+    contents,
+  });
+
+  for (const part of response.candidates![0].content!.parts!) {
+    if (part.inlineData) {
+      const buffer = Buffer.from(part.inlineData.data!, "base64");
+      writeFileSync(outputPath, buffer);
+      return;
+    }
+  }
+
+  // 画像生成失敗時は元画像をコピー
+  copyFileSync(imagePath, outputPath);
 }
 
 function buildHTML(content: GeneratedContent, images: string[]): string {
@@ -111,16 +266,18 @@ function buildHTML(content: GeneratedContent, images: string[]): string {
   const style = templates[content.type];
 
   const sectionsHTML = content.sections
-    .map(
-      (section, i) => `
+    .map((section, i) => {
+      const time = new Date(section.startTime * 1000).toISOString().substr(11, 8);
+      return `
     <section class="section">
-      <img src="${images[section.imageIndex] || images[i] || ""}" alt="${section.heading}" class="section-image">
+      <div class="timestamp">${time}</div>
+      <img src="${images[i] || ""}" alt="${section.heading}" class="section-image">
       <div class="section-content">
         <h2>${section.heading}</h2>
         <div class="body">${section.body}</div>
       </div>
-    </section>`
-    )
+    </section>`;
+    })
     .join("\n");
 
   return `<!DOCTYPE html>
@@ -144,8 +301,17 @@ function buildHTML(content: GeneratedContent, images: string[]): string {
       margin-bottom: 2rem;
       text-align: center;
     }
-    .section {
-      margin-bottom: 3rem;
+    .section { margin-bottom: 3rem; position: relative; }
+    .timestamp {
+      position: absolute;
+      top: 0.5rem;
+      right: 0.5rem;
+      background: rgba(0,0,0,0.7);
+      color: white;
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      font-family: monospace;
     }
     .section-image {
       width: 100%;
@@ -175,49 +341,75 @@ function buildHTML(content: GeneratedContent, images: string[]): string {
 }
 
 async function main(): Promise<void> {
-  const transcriptPath = process.argv[2];
-  const imagesDir = process.argv[3];
+  const vttPath = process.argv[2];
+  const framesDir = process.argv[3];
 
-  if (!transcriptPath || !imagesDir) {
-    console.log("使い方: npx tsx generate-html.ts <transcript.txt> <selected_images_dir>");
-    console.log("例: npx tsx generate-html.ts 'GUITV Vol_4.txt' 'GUITV Vol_4_selected'");
+  if (!vttPath || !framesDir) {
+    console.log("使い方: npx tsx generate-html.ts <transcript.vtt> <frames_dir>");
     process.exit(1);
   }
 
-  // 環境変数チェック
   if (!process.env.GEMINI_API_KEY) {
     console.error("エラー: GEMINI_API_KEY環境変数を設定してください");
     process.exit(1);
   }
 
-  // ファイル読み込み
-  const transcript = readFileSync(transcriptPath, "utf-8");
-  const images = readdirSync(imagesDir)
-    .filter((f) => f.endsWith(".jpg") || f.endsWith(".png"))
-    .sort()
-    .map((f) => join(imagesDir, f));
+  // VTT解析
+  const vttContent = readFileSync(vttPath, "utf-8");
+  const cues = parseVtt(vttContent);
+  console.log(`VTT解析: ${cues.length}キュー`);
 
-  console.log(`文字起こし: ${transcript.length}文字`);
-  console.log(`画像: ${images.length}枚`);
+  // フレーム一覧
+  const frames = readdirSync(framesDir)
+    .filter((f) => f.endsWith(".jpg"))
+    .sort()
+    .map((f) => join(framesDir, f));
+  console.log(`フレーム: ${frames.length}枚`);
 
   // コンテンツタイプ判定
-  const contentType = await classifyContent(transcript);
+  const contentType = await classifyContent(cuesToText(cues));
   console.log(`判定結果: ${contentType}`);
 
-  // 記事生成
-  const content = await generateArticle(transcript, images, contentType);
+  // セクション生成
+  const content = await generateSections(cues, contentType);
+  console.log(`タイトル: ${content.title}`);
+
+  // 出力ディレクトリ
+  const outputDir = framesDir.replace(/_frames$/, "_output");
+  mkdirSync(outputDir, { recursive: true });
+
+  // 各セクションの画像を選定・変換
+  const outputImages: string[] = [];
+  for (let i = 0; i < content.sections.length; i++) {
+    const section = content.sections[i];
+    console.log(`\n[${i + 1}/4] ${section.heading}`);
+    console.log(`  時刻: ${section.startTime}秒`);
+
+    // 最適な画像を選定
+    const selectedFrame = await analyzeAndSelectBestFrame(frames, section.startTime);
+    console.log(`  選定: ${basename(selectedFrame)}`);
+
+    // 画像変換
+    const outputPath = join(outputDir, `section_${i + 1}.png`);
+    console.log(`  変換中: ${section.imagePrompt}`);
+    try {
+      await transformImage(selectedFrame, section.imagePrompt, outputPath);
+      console.log(`  → ${basename(outputPath)}`);
+    } catch (err) {
+      console.log(`  変換失敗、元画像を使用`);
+      copyFileSync(selectedFrame, outputPath);
+    }
+    outputImages.push(outputPath);
+  }
 
   // HTML生成
-  const html = buildHTML(content, images);
-
-  // 出力
-  const outputPath = transcriptPath.replace(/\.txt$/, ".html");
-  writeFileSync(outputPath, html);
+  const html = buildHTML(content, outputImages);
+  const htmlPath = vttPath.replace(/\.vtt$/, ".html");
+  writeFileSync(htmlPath, html);
 
   console.log(`\n完了！`);
-  console.log(`出力: ${outputPath}`);
-  console.log(`タイプ: ${contentType}`);
-  console.log(`タイトル: ${content.title}`);
+  console.log(`出力: ${htmlPath}`);
+  console.log(`画像: ${outputDir}`);
 }
 
 main().catch((err) => {

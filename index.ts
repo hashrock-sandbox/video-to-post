@@ -43,10 +43,13 @@ video-to-post: 動画からブログポストを自動生成
   GEMINI_API_KEY  Gemini APIキー
 
 処理フロー:
-  1. 音声抽出・文字起こし (whisper-cpp)
-  2. フレーム抽出 (ffmpeg)
-  3. 画像選定 (シャープネス分析)
-  4. HTML生成 (Gemini API)
+  1. 音声抽出・文字起こし (whisper-cpp) → VTT（タイムスタンプ付き）
+  2. フレーム抽出 (ffmpeg) → 時刻付きファイル名
+  3. HTML生成 (Gemini API)
+     - セクション分割（時刻付き）
+     - 各セクションの時刻に近い画像を選定
+     - Gemini画像生成で主題を強調
+     - HTML出力
 `);
     process.exit(1);
   }
@@ -64,11 +67,9 @@ video-to-post: 動画からブログポストを自動生成
   const baseName = basename(videoPath, ".mp4");
   const dir = dirname(videoPath) || ".";
 
-  const wavPath = join(dir, `${baseName}.wav`);
-  const transcriptPath = join(dir, `${baseName}.txt`);
+  const vttPath = join(dir, `${baseName}.vtt`);
   const framesDir = join(dir, `${baseName}_frames`);
-  const selectedDir = join(dir, `${baseName}_selected`);
-  const transformedDir = join(dir, `${baseName}_transformed`);
+  const outputDir = join(dir, `${baseName}_output`);
   const htmlPath = join(dir, `${baseName}.html`);
 
   console.log(`
@@ -81,20 +82,14 @@ video-to-post: 動画からブログポストを自動生成
 出力: ${htmlPath}
 `);
 
-  // Step 1: 文字起こし
+  // Step 1: 文字起こし（VTT形式）
   await runScript("transcribe.ts", [videoPath]);
 
-  // Step 2: フレーム抽出
+  // Step 2: フレーム抽出（時刻付きファイル名）
   await runScript("extract-frames.ts", [videoPath, "100"]);
 
-  // Step 3: 画像選定
-  await runScript("select-images.ts", [framesDir, "4"]);
-
-  // Step 4: 画像変換 (nanobanana)
-  await runScript("transform-images.ts", [selectedDir]);
-
-  // Step 5: HTML生成
-  await runScript("generate-html.ts", [transcriptPath, transformedDir]);
+  // Step 3: HTML生成（画像選定・変換も含む）
+  await runScript("generate-html.ts", [vttPath, framesDir]);
 
   console.log(`
 ╔════════════════════════════════════════════════╗
@@ -102,9 +97,9 @@ video-to-post: 動画からブログポストを自動生成
 ╚════════════════════════════════════════════════╝
 
 生成ファイル:
-  - 文字起こし: ${transcriptPath}
-  - 選出画像:   ${selectedDir}/
-  - 変換画像:   ${transformedDir}/
+  - 文字起こし: ${vttPath}
+  - フレーム:   ${framesDir}/
+  - 出力画像:   ${outputDir}/
   - HTML:       ${htmlPath}
 
 ブラウザで開く:

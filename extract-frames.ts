@@ -1,10 +1,11 @@
 #!/usr/bin/env npx tsx
 /**
  * MP4動画からフレーム画像を抽出するスクリプト
+ * ファイル名に時刻を含める（例: frame_01_30_00.jpg = 1時間30分0秒）
  */
 
 import { spawn } from "child_process";
-import { existsSync, mkdirSync, readdirSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, renameSync } from "fs";
 import { basename, dirname, join } from "path";
 
 function runCommand(cmd: string, args: string[]): Promise<void> {
@@ -37,6 +38,13 @@ async function getVideoDuration(videoPath: string): Promise<number> {
   });
 }
 
+function secondsToTimecode(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  return `${h.toString().padStart(2, "0")}_${m.toString().padStart(2, "0")}_${s.toString().padStart(2, "0")}`;
+}
+
 async function extractFrames(
   videoPath: string,
   outputDir: string,
@@ -53,22 +61,33 @@ async function extractFrames(
 
   // フレームレート計算（targetFrames枚になるように）
   const fps = targetFrames / duration;
+  const interval = duration / targetFrames;
   console.log(`抽出レート: ${fps.toFixed(3)} fps (目標${targetFrames}枚)`);
 
-  // ffmpegでフレーム抽出
+  // ffmpegでフレーム抽出（一時的に連番で）
+  const tempPattern = join(outputDir, "temp_%04d.jpg");
   await runCommand("ffmpeg", [
     "-i", videoPath,
     "-vf", `fps=${fps}`,
-    "-q:v", "2", // 高品質JPEG
+    "-q:v", "2",
     "-y",
-    join(outputDir, "frame_%04d.jpg"),
+    tempPattern,
   ]);
 
-  // 抽出されたファイル一覧
-  const files = readdirSync(outputDir)
-    .filter((f) => f.endsWith(".jpg"))
-    .sort()
-    .map((f) => join(outputDir, f));
+  // ファイル名を時刻付きにリネーム
+  const tempFiles = readdirSync(outputDir)
+    .filter((f) => f.startsWith("temp_") && f.endsWith(".jpg"))
+    .sort();
+
+  const files: string[] = [];
+  for (let i = 0; i < tempFiles.length; i++) {
+    const seconds = i * interval;
+    const timecode = secondsToTimecode(seconds);
+    const oldPath = join(outputDir, tempFiles[i]);
+    const newPath = join(outputDir, `frame_${timecode}.jpg`);
+    renameSync(oldPath, newPath);
+    files.push(newPath);
+  }
 
   console.log(`抽出完了: ${files.length}枚`);
   return files;

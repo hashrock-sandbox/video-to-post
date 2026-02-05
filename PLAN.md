@@ -5,107 +5,84 @@
 ```
 video.mp4
     │
-    ├──► [ffmpeg] ──► audio.wav ──► [whisper-cpp] ──► transcript.txt
+    ├──► [ffmpeg] ──► audio.wav ──► [whisper-cpp] ──► transcript.vtt (タイムスタンプ付き)
     │
-    └──► [ffmpeg] ──► frames/*.jpg (100枚)
+    └──► [ffmpeg] ──► frames/frame_HH_MM_SS.jpg (時刻付きファイル名、100枚)
                           │
                           ▼
-                    [Gemini Embedding]
-                          │
-                          ▼
-                    特徴ベクトル分類
-                          │
-                          ▼
-                    選出画像 4枚
-                          │
-                          ▼
-              transcript.txt + 画像4枚
+              transcript.vtt + frames/
                           │
                           ▼
                     [Gemini API]
-                          │
-                          ▼
-                      output.html
+                     ├── コンテンツタイプ判定
+                     ├── 4セクション生成（時刻・画像プロンプト付き）
+                     │
+                     ▼
+              各セクションの時刻に近い画像を選定
+                     │
+                     ▼
+              [Gemini 2.5 Flash Image]
+              主題を強調した画像に変換
+                     │
+                     ▼
+                 output.html
 ```
 
 ## フェーズ
 
 ### Phase 1: 音声処理 ✅
 - [x] MP4 → WAV変換（ffmpeg）
-- [x] WAV → テキスト（whisper-cpp）
+- [x] WAV → VTT（whisper-cpp、タイムスタンプ付き）
 - [x] install.sh
 
 ### Phase 2: 画像抽出 ✅
-- [x] MP4 → JPG連番出力（ffmpeg、動画長から自動計算）
+- [x] MP4 → JPG連番出力（ffmpeg）
+- [x] 時刻付きファイル名（frame_HH_MM_SS.jpg）
 - [x] 出力先: `{basename}_frames/` ディレクトリ
 
-### Phase 3: 画像選定 ✅
-- [x] 時間的に4グループに分割
-- [x] シャープネス・明るさでスコアリング
-- [x] 各グループから最高スコアの画像を選出
-
-### Phase 3.5: 画像変換 (nanobanana) ✅
-- [x] Gemini画像生成 (gemini-2.5-flash-preview-05-20)
-- [x] スタイル別プロンプト (blog/lp/tutorial)
-- [x] 元画像をベースに変換
-
-### Phase 4: コンテンツ分類 ✅
-- [x] Geminiでtranscriptを分析
-- [x] 動画タイプを判定:
-  - `blog`: 一般的な解説・レビュー
-  - `lp`: 製品紹介・プロモーション
-  - `tutorial`: ハウツー・手順説明
-
-### Phase 5: HTML生成 ✅
-- [x] タイプ別スタイル（blog/lp/tutorial）
-- [x] Geminiで4セクション構成の記事生成
-- [x] 画像配置
-- [x] HTML出力
-- [x] 統合スクリプト（index.ts）
+### Phase 3: HTML生成（統合） ✅
+- [x] VTT解析
+- [x] コンテンツタイプ判定（blog/lp/tutorial）
+- [x] 4セクション生成（時刻・画像プロンプト付き）
+- [x] 各セクションの時刻に近い画像を選定（シャープネス分析）
+- [x] Gemini画像生成で主題を強調した画像に変換
+- [x] HTML出力（タイムスタンプ表示）
 
 ## ファイル構成
 
 ```
 video-to-post/
-├── transcribe.ts      # 文字起こし
-├── extract-frames.ts  # 画像抽出
-├── select-images.ts   # 画像選定
-├── generate-html.ts   # HTML生成
 ├── index.ts           # メインエントリ
-├── templates/
-│   ├── blog.html
-│   ├── lp.html
-│   └── tutorial.html
+├── transcribe.ts      # 文字起こし（VTT出力）
+├── extract-frames.ts  # 画像抽出（時刻付きファイル名）
+├── generate-html.ts   # HTML生成（画像選定・変換含む）
+├── install.sh         # セットアップスクリプト
+├── .env               # GEMINI_API_KEY
 └── output/
-    ├── frames/
-    ├── selected/
-    └── post.html
+    ├── {name}.vtt           # 文字起こし
+    ├── {name}_frames/       # 抽出フレーム(100枚)
+    │   ├── frame_00_00_00.jpg
+    │   ├── frame_00_00_57.jpg
+    │   └── ...
+    ├── {name}_output/       # 変換済み画像
+    │   ├── section_1.png
+    │   ├── section_2.png
+    │   ├── section_3.png
+    │   └── section_4.png
+    └── {name}.html          # 最終出力
 ```
 
-## API
+## 使い方
 
-### Gemini
+```bash
+# セットアップ
+./install.sh
 
-```typescript
-// 画像埋め込み
-const embedding = await gemini.embedContent({
-  model: "embedding-001",
-  content: { parts: [{ inlineData: { mimeType: "image/jpeg", data: base64 } }] }
-});
+# 実行
+npx tsx index.ts video.mp4
 
-// 記事生成
-const result = await gemini.generateContent({
-  model: "gemini-2.0-flash",
-  contents: [{ parts: [
-    { text: prompt },
-    { text: transcript },
-    { inlineData: { mimeType: "image/jpeg", data: img1 } },
-    // ...
-  ]}]
-});
+# または個別実行
+npx tsx transcribe.ts video.mp4
+npx tsx extract-frames.ts video.mp4 100
+npx tsx generate-html.ts video.vtt video_frames
 ```
-
-## 次のステップ
-
-1. Phase 2: `extract-frames.ts` を実装
-2. Gemini API SDKをインストール (`npm install @google/generative-ai`)
