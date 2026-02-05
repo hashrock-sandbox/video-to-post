@@ -682,4 +682,9 @@ app.get("/", (c) => {
 // サーバー起動
 const port = parseInt(process.env.PORT || "3000", 10);
 console.log(`Server running at http://localhost:${port}`);
-serve({ fetch: app.fetch, port });
+const server = serve({ fetch: app.fetch, port });
+
+// 大きなファイルアップロード用にタイムアウトを延長（10分）
+server.timeout = 600000;
+server.headersTimeout = 610000;
+server.requestTimeout = 600000;
